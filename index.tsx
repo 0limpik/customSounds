@@ -34,7 +34,7 @@ function setOverride(id: string, o: SoundOverride) { settings.store[id] = JSON.s
 
 async function cacheCustom(id: string | undefined) {
     if (!id) return;
-    try { await ensureDataURICached(id); } catch { showToast("Custom sound load error"); }
+    try { ensureDataURICached(id, settings.store); } catch { showToast("Custom sound load error"); }
 }
 
 const soundSettings = Object.fromEntries(soundTypes.map(t => [t.id, { type: OptionType.STRING, description: `Override for ${t.name}`, default: JSON.stringify(makeEmptyOverride()), hidden: true }]));
@@ -51,7 +51,7 @@ function SoundCard({ type, override, files, onFilesChange, onChange }: { type: S
         if (!override.enabled) { sound.current = playAudio(type.id); return; }
         const { selectedSound, volume, selectedFileId } = override;
         if (selectedSound === "custom" && selectedFileId) {
-            const dataUri = await ensureDataURICached(selectedFileId);
+            const dataUri = await ensureDataURICached(selectedFileId, settings.store);
             if (!dataUri?.startsWith("data:audio/")) { showToast("No custom sound file available"); return; }
             sound.current = playAudio(dataUri, { volume });
         } else sound.current = playAudio(selectedSound === "default" ? type.id : selectedSound, { volume });
@@ -63,11 +63,11 @@ function SoundCard({ type, override, files, onFilesChange, onChange }: { type: S
         if (!file) return;
         try {
             showToast("Uploading file...");
-            const id = await saveAudio(file);
+            const id = await saveAudio(file, settings.store);
             await onFilesChange();
             override.selectedFileId = id;
             override.selectedSound = "custom";
-            await ensureDataURICached(id);
+            await ensureDataURICached(id, settings.store);
             await saveAndNotify();
             showToast(`Uploaded: ${file.name}`);
         } catch (e) { console.error("[CustomSounds] Upload failed:", e); showToast(`Upload failed: ${e}`); }
@@ -75,7 +75,7 @@ function SoundCard({ type, override, files, onFilesChange, onChange }: { type: S
 
     const deleteFile = async (id: string) => {
         try {
-            await deleteAudio(id);
+            await deleteAudio(id, settings.store);
             await onFilesChange();
             if (override.selectedFileId === id) {
                 override.selectedFileId = undefined;
@@ -103,7 +103,7 @@ function SoundCard({ type, override, files, onFilesChange, onChange }: { type: S
                 {override.selectedSound === "custom" && <>
                     <Heading className={Margins.bottom8}>Custom File</Heading>
                     <div style={{ marginBottom: 16 }}>
-                        <Select closeOnSelect serialize={v => v} isSelected={v => v === (override.selectedFileId || "")} options={[{ value: "", label: "Select a file..." }, ...fileOpts]} select={async id => { override.selectedFileId = id || undefined; if (id) await ensureDataURICached(id); await saveAndNotify(); }} />
+                        <Select closeOnSelect serialize={v => v} isSelected={v => v === (override.selectedFileId || "")} options={[{ value: "", label: "Select a file..." }, ...fileOpts]} select={async id => { override.selectedFileId = id || undefined; if (id) ensureDataURICached(id, settings.store); await saveAndNotify(); }} />
                     </div>
                     <input ref={fileInputRef} type="file" accept=".mp3,.wav,.ogg,.m4a,.flac,.aac,.webm,.wma,.mp4" style={{ display: "none" }} onChange={uploadFile} />
                     <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
@@ -122,7 +122,7 @@ function SettingsUI() {
     const fileInputRef = React.useRef<HTMLInputElement>(null);
 
     const loadFiles = React.useCallback(async () => {
-        try { setFiles(await getAudioMeta()); } catch (e) { console.error("[CustomSounds]", e); }
+        try { setFiles(getAudioMeta(settings.store)); } catch (e) { console.error("[CustomSounds]", e); }
     }, []);
 
     React.useEffect(() => {
@@ -150,8 +150,8 @@ function SettingsUI() {
                 let n = 0;
                 for (const fd of imp.files ?? []) {
                     if (!fd?.dataUri || !fd?.name) continue;
-                    const newId = await importAudio({ id: fd.id ?? "", name: fd.name, type: fd.type ?? "audio/mpeg", dataUri: fd.dataUri }).catch(() => null);
-                    if (newId) { if (fd.id) remap[fd.id] = newId; await ensureDataURICached(newId); n++; }
+                    const newId = await importAudio({ id: fd.id ?? "", name: fd.name, dataUri: fd.dataUri }, settings.store).catch(() => null);
+                    if (newId) { if (fd.id) remap[fd.id] = newId; ensureDataURICached(newId, settings.store); n++; }
                 }
                 if (n) await loadFiles();
                 for (const s of imp.overrides ?? []) {
@@ -168,8 +168,8 @@ function SettingsUI() {
     const downloadSettings = async () => {
         const overrides = soundTypes.map(t => { const o = getOverride(t.id); return { id: t.id, enabled: o.enabled, selectedSound: o.selectedSound, selectedFileId: o.selectedFileId, volume: o.volume }; }).filter(o => o.enabled || o.selectedSound !== "default");
         const refs = new Set(overrides.map(o => o.selectedFileId).filter(Boolean) as string[]);
-        const all = await getAllAudio();
-        const bundled: ExportedAudioFile[] = [...refs].map(id => all[id]).filter(f => f?.dataUri).map(f => ({ id: f.id, name: f.name, type: f.type, dataUri: f.dataUri }));
+        const all = await getAllAudio(settings.store);
+        const bundled: ExportedAudioFile[] = [...refs].map(id => all[id]).filter(f => f?.dataUri).map(f => ({ id: f.id, name: f.name, dataUri: f.dataUri }));
         const blob = new Blob([JSON.stringify({ overrides, files: bundled }, null, 2)], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -283,7 +283,7 @@ export default definePlugin({
         for (const t of soundTypes) {
             const o = getOverride(t.id);
             if (o?.enabled && o.selectedSound === "custom" && o.selectedFileId) {
-                try { await ensureDataURICached(o.selectedFileId); } catch (e) { console.error("[CustomSounds]", e); }
+                try { ensureDataURICached(o.selectedFileId, settings.store); } catch (e) { console.error("[CustomSounds]", e); }
             }
         }
     },

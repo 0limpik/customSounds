@@ -4,10 +4,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { get, set } from "@api/DataStore";
 import { findByCodeLazy } from "@webpack";
 
-const KEY = "ScattrdCustomSounds";
 const AudioPlayerCtor = findByCodeLazy("could not play audio");
 
 export interface PreprocessAudioData { audio: string; volume: number; }
@@ -40,14 +38,14 @@ export function playAudio(audio: string, opts: { volume?: number; } = {}): Previ
     };
 }
 
-export interface StoredAudioFile { id: string; name: string; type: string; buffer: ArrayBuffer; dataUri: string; }
-export interface ExportedAudioFile { id: string; name: string; type: string; dataUri: string; }
+export interface StoredAudioFile { id: string; name: string; dataUri: string; }
+export interface ExportedAudioFile { id: string; name: string; dataUri: string; }
 
 export const dataUriCache = new Map<string, string>();
 
 async function hashBuffer(buffer: ArrayBuffer): Promise<string> {
     const digest = await crypto.subtle.digest("SHA-256", buffer);
-    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
+    return `$${Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
 async function generateDataURI(buffer: ArrayBuffer, type: string): Promise<string> {
@@ -71,55 +69,52 @@ function dataUriToArrayBuffer(dataUri: string): ArrayBuffer | null {
     } catch { return null; }
 }
 
-export async function getAllAudio(): Promise<Record<string, StoredAudioFile>> {
-    return (await get(KEY)) ?? {};
+export function getAllAudio(store: Record<string, string>): Record<string, StoredAudioFile> {
+    let all: Record<string, StoredAudioFile> = {};
+    for (const [name, value] of Object.entries(store)) {
+        if (!name.startsWith("$")) {
+            continue;
+        }
+        all[name.slice(1)] = JSON.parse(value);
+    }
+    return all;
 }
 
-export async function getAudioMeta(): Promise<Record<string, string>> {
-    const all = await getAllAudio();
+export function getAudioMeta(store: Record<string, string>): Record<string, string> {
+    const all = getAllAudio(store);
     const meta: Record<string, string> = {};
     for (const [id, f] of Object.entries(all)) meta[id] = f.name;
     return meta;
 }
 
-export async function saveAudio(file: File): Promise<string> {
+export async function saveAudio(file: File, store: Record<string, string>): Promise<string> {
     const buffer = await file.arrayBuffer();
     const id = await hashBuffer(buffer);
     const dataUri = await generateDataURI(buffer, file.type);
-    const all = (await get(KEY)) ?? {};
-    all[id] = { id, name: file.name, type: file.type, buffer, dataUri };
-    await set(KEY, all);
+    const value: StoredAudioFile = { id: id, name: file.name, dataUri: dataUri };
+    store[id] = JSON.stringify(value);
     return id;
 }
 
-export async function deleteAudio(id: string): Promise<void> {
-    const all = await getAllAudio();
+export function deleteAudio(id: string, store: Record<string, string>): void {
+    const all = getAllAudio(store);
     delete all[id];
-    await set(KEY, all);
 }
 
-export async function ensureDataURICached(fileId: string): Promise<string | null> {
+export function ensureDataURICached(fileId: string, store: Record<string, string>): string | null {
     if (dataUriCache.has(fileId)) return dataUriCache.get(fileId)!;
     try {
-        const e = (await getAllAudio())[fileId];
+        const e = getAllAudio(store)[fileId];
         if (e?.dataUri) { dataUriCache.set(fileId, e.dataUri); return e.dataUri; }
-        if (e?.buffer instanceof ArrayBuffer) {
-            const dataUri = await generateDataURI(e.buffer, e.type);
-            const cur = await getAllAudio();
-            if (cur[fileId]) { cur[fileId].dataUri = dataUri; await set(KEY, cur); }
-            dataUriCache.set(fileId, dataUri);
-            return dataUri;
-        }
     } catch (e) { console.error("[CustomSounds]", e); }
     return null;
 }
 
-export async function importAudio(data: ExportedAudioFile): Promise<string | null> {
+export async function importAudio(data: ExportedAudioFile, store: Record<string, string>): Promise<string | null> {
     const buffer = data.dataUri ? dataUriToArrayBuffer(data.dataUri) : null;
     if (!buffer) return null;
     const id = await hashBuffer(buffer);
-    const all = (await get(KEY)) ?? {};
-    all[id] = { id, name: data.name || "Imported", type: data.type || "audio/mpeg", buffer, dataUri: data.dataUri };
-    await set(KEY, all);
+    const all = getAllAudio(store);
+    all[id] = { id, name: data.name || "Imported", dataUri: data.dataUri };
     return id;
 }
